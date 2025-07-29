@@ -26,15 +26,15 @@ class SteamGame(Base):
     app_id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     tags = Column(Text, nullable=True)
-    has_simplified_chinese = Column(Boolean, default=False, index=True)
-    has_traditional_chinese = Column(Boolean, default=False, index=True)
+    # 修改开始
+    supported_languages = Column(Text, nullable=True)  # 新增: 通用语言字段
+    language_reviews = Column(Text, nullable=True) # 新增: 存储不同语言评测数 (JSON格式字符串)
+    # 修改结束
     last_scanned = Column(DateTime, nullable=True, index=True)
     
     # --- 最终版字段 ---
     total_reviews_all_purchase_types = Column(Integer, default=0)
-    chinese_reviews_all_purchase_types = Column(Integer, default=0)
     total_reviews_steam_purchase_only = Column(Integer, default=0)
-    chinese_reviews_steam_purchase_only = Column(Integer, default=0)
 
 
 def get_db():
