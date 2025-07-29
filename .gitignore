@@ -1,0 +1,7 @@
+# .gitignore 文件
+
+# 忽略 py 文件夹下的 .env 文件
+py/.env
+
+py/venv/
+py/__pycache__/
