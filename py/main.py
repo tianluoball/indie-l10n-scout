@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+# --- 修改：新增导入 or_ ---
 from sqlalchemy import func, or_, desc
 
 from database import get_db, SteamGame, create_db_and_tables
@@ -75,11 +76,18 @@ def update_games_on_demand(app_ids: list[int], language: str, db: Session, api_k
 
 @app.get("/search", response_model=list[dict])
 def search_games(query: str, db: Session = Depends(get_db)):
-    """根据关键词搜索游戏。"""
+    """根据关键词搜索游戏，并过滤掉非游戏内容。"""
     if not query:
         return []
     search_query = f"%{query}%"
-    found_games = db.query(SteamGame).filter(SteamGame.name.ilike(search_query)).limit(10).all()
+    
+    # --- 修改：增加类型过滤 ---
+    # 只返回类型为'game'或尚未被扫描过(type is NULL)的应用
+    found_games = db.query(SteamGame).filter(
+        SteamGame.name.ilike(search_query),
+        or_(SteamGame.type == 'game', SteamGame.type == None)
+    ).limit(10).all()
+    
     return [{"name": g.name, "appid": g.app_id} for g in found_games]
 
 @app.get("/analyze_by_tags", response_model=dict)

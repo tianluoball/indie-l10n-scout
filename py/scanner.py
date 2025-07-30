@@ -7,7 +7,6 @@ import re
 from sqlalchemy.orm import Session
 from database import SessionLocal, SteamGame, create_db_and_tables
 
-# ... (顶部的常量等保持不变) ...
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails"
 REVIEW_API_URL = "https://store.steampowered.com/appreviews"
 REQUEST_DELAY = 1.5
@@ -39,29 +38,14 @@ def get_app_details_with_retry(app_id: int, max_retries=3):
     print(f"  - AppID {app_id}: 重试 {max_retries} 次后仍然失败。")
     return None
 
-# --- 这是最终版的、最健壮的解析函数 ---
 def parse_languages(supported_languages_str: str):
-    """
-    从Steam返回的HTML字符串中稳健地提取一个干净的语言列表。
-    """
     if not supported_languages_str:
         return ""
-    
-    # 1. 移除所有HTML标签 (e.g., <br>, <strong>)
     clean_str = re.sub('<[^<]+?>', ' ', supported_languages_str)
-    
-    # 2. 移除所有星号 (*)
     clean_str = clean_str.replace('*', '')
-    
-    # 3. 移除特定的注释短语
     clean_str = re.sub(r'languages with full audio support', '', clean_str, flags=re.IGNORECASE)
-    
-    # 4. 按逗号分割，并清理每个语言名称的空白
     languages = [lang.strip() for lang in clean_str.split(',') if lang.strip()]
-    
-    # 5. 移除重复项并返回最终的、干净的字符串
     unique_languages = sorted(list(set(languages)), key=str.lower)
-    
     return ",".join(filter(None, unique_languages))
 
 def parse_tags(genres: list, categories: list):
@@ -96,13 +80,18 @@ def process_single_game(game: SteamGame, db: Session, languages_to_scan: list[st
             print(f"  - AppID {game.app_id}: 获取详情失败，跳过详情更新。")
         else:
             app_data = details[str(game.app_id)]['data']
+            app_type = app_data.get('type')
+            game.type = app_type  # 存储应用类型
+
+            if app_type != 'game':
+                print(f"  - AppID {game.app_id} 不是游戏 (类型: {app_type})。已跳过。")
+                game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
+                return  # 直接返回，让主循环处理数据库提交
+
             raw_lang_str = app_data.get('supported_languages', '')
-            print(f"    - 从API获取的原始语言字符串: '{raw_lang_str}'")
-            
             game.supported_languages = parse_languages(raw_lang_str)
             game.tags = parse_tags(app_data.get('genres', []), app_data.get('categories', []))
             print(f"  - AppID {game.app_id} 详情解析完成！")
-            print(f"    - 解析后的支持语言: '{game.supported_languages}'")
 
         game.total_reviews_all_purchase_types = get_review_count(game.app_id, 'all', 'all', api_key=api_key)
         time.sleep(0.2)
@@ -130,37 +119,36 @@ def process_single_game(game: SteamGame, db: Session, languages_to_scan: list[st
     game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
     print(f"  - AppID {game.app_id} 处理完成，时间戳已更新。")
 
-# --- 修改 scan_and_update_games 以使用新的函数签名 ---
 def scan_and_update_games():
     db: Session = SessionLocal()
     try:
         while True:
-            # 扫描新游戏时，强制更新所有信息，并使用常规语言列表
             games_to_scan = db.query(SteamGame).filter(SteamGame.last_scanned == None).limit(100).all()
             if games_to_scan:
-                print(f"\n--- 发现 {len(games_to_scan)} 个新游戏，开始常规扫描 ---")
+                print(f"\n--- 发现 {len(games_to_scan)} 个新条目，开始初次扫描 ---")
                 for game in games_to_scan:
-                    # 对于新游戏，强制更新详情，并扫描核心语言
                     process_single_game(game, db, languages_to_scan=CORE_LANGUAGES, force_details_update=True)
                     db.commit()
                     print(f"  - AppID {game.app_id} 的更改已提交到数据库。")
                     time.sleep(REQUEST_DELAY)
                 continue
 
-            print("\n--- 没有新游戏，开始检查超过7天未更新的旧数据 ---")
+            print("\n--- 没有新条目，开始检查超过7天未更新的游戏 ---")
             seven_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
-            games_to_rescan = db.query(SteamGame).filter(SteamGame.last_scanned < seven_days_ago).order_by(SteamGame.last_scanned.asc()).limit(100).all()
+            games_to_rescan = db.query(SteamGame).filter(
+                SteamGame.last_scanned < seven_days_ago,
+                SteamGame.type == 'game'  # 只重新扫描游戏
+            ).order_by(SteamGame.last_scanned.asc()).limit(100).all()
             
             if games_to_rescan:
                 print(f"--- 发现 {len(games_to_rescan)} 个旧游戏需要更新，开始常规扫描 ---")
                 for game in games_to_rescan:
-                     # 对于旧游戏，也强制更新详情，并扫描核心语言
                     process_single_game(game, db, languages_to_scan=CORE_LANGUAGES, force_details_update=True)
                     db.commit()
                     print(f"  - AppID {game.app_id} 的更改已提交到数据库。")
                     time.sleep(REQUEST_DELAY)
             else:
-                print("--- 所有数据都比较新，暂停1小时后再次检查 ---")
+                print("--- 所有游戏数据都比较新，暂停1小时后再次检查 ---")
                 time.sleep(3600)
     except KeyboardInterrupt:
         print("\n收到中断信号，程序退出。")
