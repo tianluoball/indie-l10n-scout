@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-# --- 修改：新增导入 or_ ---
 from sqlalchemy import func, or_, desc
 
 from database import get_db, SteamGame, create_db_and_tables
@@ -81,11 +80,10 @@ def search_games(query: str, db: Session = Depends(get_db)):
         return []
     search_query = f"%{query}%"
     
-    # --- 修改：增加类型过滤 ---
-    # 只返回类型为'game'或尚未被扫描过(type is NULL)的应用
+    # --- 核心修改在这里 ---
     found_games = db.query(SteamGame).filter(
         SteamGame.name.ilike(search_query),
-        or_(SteamGame.type == 'game', SteamGame.type == None)
+        or_(SteamGame.type.in_(['game', 'demo']), SteamGame.type == None)
     ).limit(10).all()
     
     return [{"name": g.name, "appid": g.app_id} for g in found_games]
@@ -99,41 +97,39 @@ def analyze_by_tags(
     """
     根据用户输入的自定义标签（Tags）进行本地化潜力分析。
     """
-    # 1. 解析用户输入的标签字符串
-    raw_tags = tags.replace(';', ',') # 将分号也替换为逗号
+    raw_tags = tags.replace(';', ',')
     user_tags = [t.strip() for t in raw_tags.split(',') if t.strip()]
     
     if not user_tags:
         raise HTTPException(status_code=400, detail="输入的标签列表为空，请至少提供一个标签。")
 
-    # 2. 获取语言全名以用于查询
     lang_code_to_name_map = {
         "schinese": "Simplified Chinese", "tchinese": "Traditional Chinese", "japanese": "Japanese", "koreana": "Korean",
-        # ... (这里省略了所有语言的映射，请从你的analyze_game_v2函数中复制过来) ...
+        "thai": "Thai", "bulgarian": "Bulgarian", "czech": "Czech", "danish": "Danish", "german": "German",
+        "spanish": "Spanish - Spain", "latam": "Spanish - Latin America", "greek": "Greek", "french": "French",
+        "italian": "Italian", "indonesian": "Indonesian", "hungarian": "Hungarian", "dutch": "Dutch", "norwegian": "Norwegian",
+        "polish": "Polish", "portuguese": "Portuguese - Portugal", "brazilian": "Portuguese - Brazil", "romanian": "Romanian",
+        "russian": "Russian", "finnish": "Finnish", "swedish": "Swedish", "turkish": "Turkish", "vietnamese": "Vietnamese",
+        "ukrainian": "Ukrainian", "english": "English", "arabic": "Arabic"
     }
     language_fullname_for_query = lang_code_to_name_map.get(language, language)
 
-    # 3. 构建相似性比较查询
-    # 使用你现有的逻辑来匹配至少一个标签
-    # 注意：这里直接使用 user_tags 作为匹配条件
     base_comparison_query = db.query(SteamGame).filter(
+        SteamGame.type.in_(['game', 'demo']),
         SteamGame.tags.isnot(None), 
         SteamGame.tags != '',
         SteamGame.total_reviews_all_purchase_types > 10,
         func.string_to_array(SteamGame.tags, ',').op('&&')(user_tags)
     )
 
-    # 4. 根据语言支持情况进行分组
     with_lang_query = base_comparison_query.filter(SteamGame.supported_languages.ilike(f"%{language_fullname_for_query}%"))
     without_lang_query = base_comparison_query.filter(func.coalesce(SteamGame.supported_languages, '').not_ilike(f"%{language_fullname_for_query}%"))
 
-    # 5. 执行分析并返回结果
     avg_with_language = with_lang_query.with_entities(func.avg(SteamGame.total_reviews_all_purchase_types)).scalar() or 0
     with_language_examples = with_lang_query.order_by(desc(SteamGame.total_reviews_all_purchase_types)).limit(3).all()
     avg_without_language = without_lang_query.with_entities(func.avg(SteamGame.total_reviews_all_purchase_types)).scalar() or 0
     without_language_examples = without_lang_query.order_by(desc(SteamGame.total_reviews_all_purchase_types)).limit(3).all()
 
-    # 格式化示例的辅助函数
     def format_examples(games: list[SteamGame], target_language_code: str) -> list[dict]:
         results = []
         for g in games:
@@ -167,7 +163,7 @@ def analyze_by_tags(
 @app.get("/analyze/v2/{app_id}", response_model=dict)
 def analyze_game_v2(
     app_id: int,
-    language: str,  # 这是API代码，如 'schinese'
+    language: str,
     db: Session = Depends(get_db),
     user_api_key: str | None = None
 ):
@@ -200,7 +196,10 @@ def analyze_game_v2(
 
         target_tags = [tag.strip() for tag in target_game.tags.split(',') if tag.strip()]
         base_comparison_query = db.query(SteamGame).filter(
-            SteamGame.app_id != app_id, SteamGame.tags.isnot(None), SteamGame.tags != '',
+            SteamGame.app_id != app_id,
+            SteamGame.type.in_(['game', 'demo']),
+            SteamGame.tags.isnot(None), 
+            SteamGame.tags != '',
             SteamGame.total_reviews_all_purchase_types > 10,
             func.string_to_array(SteamGame.tags, ',').op('&&')(target_tags)
         )

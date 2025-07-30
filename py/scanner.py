@@ -7,6 +7,7 @@ import re
 from sqlalchemy.orm import Session
 from database import SessionLocal, SteamGame, create_db_and_tables
 
+# ... (顶部的常量等保持不变) ...
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails"
 REVIEW_API_URL = "https://store.steampowered.com/appreviews"
 REQUEST_DELAY = 1.5
@@ -76,22 +77,26 @@ def process_single_game(game: SteamGame, db: Session, languages_to_scan: list[st
     if force_details_update or not game.last_scanned:
         print("  - 正在更新游戏基本详情...")
         details = get_app_details_with_retry(game.app_id)
+        
         if not details or not details.get(str(game.app_id), {}).get('success'):
-            print(f"  - AppID {game.app_id}: 获取详情失败，跳过详情更新。")
-        else:
-            app_data = details[str(game.app_id)]['data']
-            app_type = app_data.get('type')
-            game.type = app_type  # 存储应用类型
+            print(f"  - AppID {game.app_id}: 获取详情失败或返回无效数据，标记后跳过。")
+            game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
+            return
+        
+        app_data = details[str(game.app_id)]['data']
+        app_type = app_data.get('type')
+        game.type = app_type
 
-            if app_type != 'game':
-                print(f"  - AppID {game.app_id} 不是游戏 (类型: {app_type})。已跳过。")
-                game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
-                return  # 直接返回，让主循环处理数据库提交
+        # --- 核心修改在这里 ---
+        if app_type not in ['game', 'demo']:
+            print(f"  - AppID {game.app_id} 不是游戏或Demo (类型: {app_type})。标记后跳过。")
+            game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
+            return
 
-            raw_lang_str = app_data.get('supported_languages', '')
-            game.supported_languages = parse_languages(raw_lang_str)
-            game.tags = parse_tags(app_data.get('genres', []), app_data.get('categories', []))
-            print(f"  - AppID {game.app_id} 详情解析完成！")
+        raw_lang_str = app_data.get('supported_languages', '')
+        game.supported_languages = parse_languages(raw_lang_str)
+        game.tags = parse_tags(app_data.get('genres', []), app_data.get('categories', []))
+        print(f"  - AppID {game.app_id} 详情解析完成！")
 
         game.total_reviews_all_purchase_types = get_review_count(game.app_id, 'all', 'all', api_key=api_key)
         time.sleep(0.2)
@@ -119,13 +124,14 @@ def process_single_game(game: SteamGame, db: Session, languages_to_scan: list[st
     game.last_scanned = datetime.datetime.now(datetime.timezone.utc)
     print(f"  - AppID {game.app_id} 处理完成，时间戳已更新。")
 
+
 def scan_and_update_games():
     db: Session = SessionLocal()
     try:
         while True:
             games_to_scan = db.query(SteamGame).filter(SteamGame.last_scanned == None).limit(100).all()
             if games_to_scan:
-                print(f"\n--- 发现 {len(games_to_scan)} 个新条目，开始初次扫描 ---")
+                print(f"\n--- 发现 {len(games_to_scan)} 个新条目，开始常规扫描 ---")
                 for game in games_to_scan:
                     process_single_game(game, db, languages_to_scan=CORE_LANGUAGES, force_details_update=True)
                     db.commit()
@@ -135,9 +141,10 @@ def scan_and_update_games():
 
             print("\n--- 没有新条目，开始检查超过7天未更新的游戏 ---")
             seven_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+            # --- 核心修改在这里 ---
             games_to_rescan = db.query(SteamGame).filter(
-                SteamGame.last_scanned < seven_days_ago,
-                SteamGame.type == 'game'  # 只重新扫描游戏
+                SteamGame.last_scanned < seven_days_ago, 
+                SteamGame.type.in_(['game', 'demo'])
             ).order_by(SteamGame.last_scanned.asc()).limit(100).all()
             
             if games_to_rescan:
